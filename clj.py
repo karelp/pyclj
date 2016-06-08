@@ -46,6 +46,7 @@ except ImportError:
     from io import StringIO
 
 import codecs
+import os
 
 def number(v):
     if '.' in v:
@@ -70,7 +71,7 @@ class CljDecoder(object):
             if len(self.value_stack) == 0:
                 return v
         
-    def __get_type_from_char(self, c):
+    def __get_type_from_char(self, c, c2):
         """return a tuple of type information
         * type name
         * a flag to indicate if it's a collection
@@ -87,8 +88,10 @@ class CljDecoder(object):
             return ("keyword", False, None)
         elif c == '"':
             return ("string", False, None)
-        elif c == '#':
+        elif c == '#' and c2 == '{':
             return ("set", True, "}")
+        elif c == '#' and c2 != '{':
+            return ("type", False, None)
         elif c == '{':
             return ("dict", True, "}")
         elif c == '(':
@@ -111,7 +114,12 @@ class CljDecoder(object):
         if c == '':
             raise ValueError("Unexpected EOF")
 
-        t, coll, term = self.__get_type_from_char(c)
+        # read next char to properly distinguish between sets and types
+        c2 = fd.read(1)
+        if c2 != "":
+            fd.seek(fd.tell() - 1, os.SEEK_SET)
+
+        t, coll, term = self.__get_type_from_char(c, c2)
         if coll:
             ## move cursor 
             if t == "set":
@@ -126,6 +134,7 @@ class CljDecoder(object):
             v = None ## token value
             e = None ## end char
             r = True ## the token contains data or not
+            ignore = False ## whether to ignore the token
 
             if t == "boolean":
                 if c == 't':
@@ -190,7 +199,14 @@ class CljDecoder(object):
                     cp = c
                     c = fd.read(1)
                 e = c
-                v = codecs.getdecoder('unicode_escape')(u''.join(buf))
+                v = codecs.getdecoder('unicode_escape')(u''.join(buf))[0]
+
+            elif t == "type":
+                # skip type and return next token
+                while (c not in _STOP_CHARS) and c != "":
+                    c = fd.read(1)
+                ignore = True
+                v = self.__read_token()
                 
             else:
                 if c not in _COLL_CLOSE_CHARS:
@@ -203,7 +219,7 @@ class CljDecoder(object):
 
                 if r:
                     current_scope.append(v)
-                    
+
                 if container == "set":
                     v = set(current_scope)
                 elif container == "list":
@@ -214,7 +230,8 @@ class CljDecoder(object):
                         v[current_scope[i]] = current_scope[i+1]
 
             if len(self.value_stack) > 0:
-                self.value_stack[-1][0].append(v)
+                if not ignore:
+                    self.value_stack[-1][0].append(v)
                 self.terminator = self.value_stack[-1][1]
 
             return v
